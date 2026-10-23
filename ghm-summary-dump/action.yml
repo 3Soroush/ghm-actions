@@ -1,0 +1,36 @@
+# ghm-summary-dump/action.yml
+# Put this as the LAST step of a job with `if: always()`.
+# Dumps every step's job-summary file into the job log (gzip + base64, short lines)
+# so My-Github-Manager can read them back through the logs API.
+name: GHM summary dump
+description: Copy this job's step summaries into the log between GHM_BEGIN / GHM_END markers.
+inputs:
+  max-bytes:
+    description: Per-file cap before gzip (bigger files are truncated and flagged).
+    default: "262144"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GHM_MAX_BYTES: ${{ inputs.max-bytes }}
+      run: |
+        set +e
+        D="$(dirname "$GITHUB_STEP_SUMMARY")"
+        MAX="${GHM_MAX_BYTES:-262144}"
+        echo "GHM_BEGIN v1 job=$GITHUB_JOB"
+        i=0
+        find "$D" -maxdepth 1 -name 'step_summary_*' ! -name '*-scrubbed' -printf '%T@ %p\n' | sort -n | while read -r t f; do
+          [ "$f" = "$GITHUB_STEP_SUMMARY" ] && continue
+          [ -s "$f" ] || continue
+          s="$f"; sc=0
+          if [ -f "$f-scrubbed" ]; then s="$f-scrubbed"; sc=1; fi
+          [ -s "$s" ] || continue
+          i=$((i+1))
+          total=$(stat -c %s "$s")
+          tr=0; [ "$total" -gt "$MAX" ] && tr=1
+          echo "GHM_FILE idx=$i mtime=$(stat -c '%.9Y' "$f") size=$total truncated=$tr scrubbed=$sc"
+          head -c "$MAX" "$s" | gzip -9 | base64 -w 4096 | sed 's/^/GHM_B64 /'
+          echo "GHM_FILE_END"
+        done
+        echo "GHM_END"
